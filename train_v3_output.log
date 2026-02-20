@@ -1,0 +1,199 @@
+================================================================================
+ENSEMBLE MODEL v3 - ALL PATIENTS (992)
+Fixed: Includes early-onset sepsis patients (onset hour 0-2)
+================================================================================
+
+Raw hourly data: (39331, 72)
+Total patients: 992
+Sepsis patients (from sepsis_onset.csv): 367
+Sepsis patients in data: 367
+Non-sepsis patients in data: 625
+
+--- Feature Engineering ---
+  Engineered features added: 16+ new features
+
+--- Patient-Level Aggregation ---
+  Aggregated to 992 patients, 102 features
+  Sepsis: 367, Non-sepsis: 625
+
+--- Train/Test Split (80/20 stratified) ---
+  Train: 793 patients (293 sepsis, 500 non-sepsis)
+  Test:  199 patients (74 sepsis, 125 non-sepsis)
+  Features: 100
+
+  After SMOTE: 1000 samples (class 0: 500, class 1: 500)
+
+================================================================================
+STEP 3 : MODEL TRAINING
+================================================================================
+  Training set : 1000 samples (after SMOTE)
+  Test set     : 199 patients (held-out, never seen during training)
+  Features     : 100
+
+[1/4] Logistic Regression...
+  Acc=93.5%  Prec=93.0%  Sens=89.2%  F1=91.0%  AUROC=0.9904
+
+[2/4] Random Forest...
+  Acc=95.5%  Prec=89.2%  Sens=100.0%  F1=94.3%  AUROC=0.9882
+
+[3/4] XGBoost...
+  Acc=96.5%  Prec=91.4%  Sens=100.0%  F1=95.5%  AUROC=0.9930
+
+[4/4] Gradient Boosting...
+  Acc=97.0%  Prec=92.5%  Sens=100.0%  F1=96.1%  AUROC=0.9904
+
+------------------------------------------------------------------------
+  Model                   Accuracy  Precision  Sensitivity  F1-Score    AUROC
+  ------------------------------------------------------------------------
+  Logistic Regression        93.5%      93.0%        89.2%     91.0%   0.9904
+  Random Forest              95.5%      89.2%       100.0%     94.3%   0.9882
+  XGBoost                    96.5%      91.4%       100.0%     95.5%   0.9930
+  Gradient Boosting          97.0%      92.5%       100.0%     96.1%   0.9904
+  ------------------------------------------------------------------------
+  Note: individual models evaluated at default threshold = 0.50
+
+================================================================================
+STEP 4 : ENSEMBLE WEIGHT AND THRESHOLD OPTIMIZATION
+================================================================================
+
+  Weights (LR,RF,XGB,GB)        Thresh     Acc    Prec     Sens      F1
+  ----------------------------------------------------------------------
+  (0.1, 0.2, 0.5, 0.2)           0.759   97.5%   96.1%    99.0%   97.5%
+  (0.1, 0.3, 0.4, 0.2)           0.760   97.5%   96.1%    99.0%   97.5%
+  (0.2, 0.2, 0.4, 0.2)           0.770   98.0%   97.1%    99.0%   98.0%
+  (0.1, 0.3, 0.3, 0.3)           0.776   97.5%   96.1%    99.0%   97.5%
+  (0.15, 0.25, 0.35, 0.25)       0.775   98.0%   97.1%    99.0%   98.0%
+  (0.2, 0.3, 0.3, 0.2)           0.748   98.0%   97.1%    99.0%   98.0%
+  (0.1, 0.2, 0.4, 0.3)           0.792   97.5%   96.1%    99.0%   97.5%
+  (0.05, 0.25, 0.45, 0.25)       0.775   97.5%   96.1%    99.0%   97.5%
+  (0.15, 0.15, 0.5, 0.2)         0.759   97.5%   96.1%    99.0%   97.5%
+  (0.1, 0.15, 0.5, 0.25)         0.771   97.5%   96.1%    99.0%   97.5%
+
+  Best weights: (0.2, 0.2, 0.4, 0.2)
+  Best threshold (from inner val): 0.7697
+
+================================================================================
+STEP 5 : HELD-OUT TEST SET PERFORMANCE
+        (199 patients never seen during training or optimization)
+================================================================================
+
+  Metrics on 199 UNSEEN patients:
+   Accuracy:    95.5% (PASS)
+   Precision:   95.8% (PASS)
+   Sensitivity: 91.9% (PASS)
+   F1-Score:    93.8%
+   AUROC:       99.4%
+   AUPRC:       98.9%
+   Threshold:   0.7697
+
+  Confusion Matrix:
+                 Predicted
+              No Sepsis  Sepsis
+Actual No         122        3
+       Sepsis       6       68
+
+  Clinical Impact:
+   Catches 68/74 sepsis cases (92%)
+   Misses 6 sepsis cases
+   3 false alarms out of 125 non-sepsis
+
+              precision    recall  f1-score   support
+
+   No Sepsis       0.95      0.98      0.96       125
+      Sepsis       0.96      0.92      0.94        74
+
+    accuracy                           0.95       199
+   macro avg       0.96      0.95      0.95       199
+weighted avg       0.95      0.95      0.95       199
+
+================================================================================
+STEP 6 : 5-FOLD STRATIFIED CROSS-VALIDATION (ALL 992 PATIENTS)
+================================================================================
+  Fold 1: Acc=95.0%  Prec=90.0%  Sens=97.3%  F1=93.5%  AUROC=98.6%  (thresh=0.424)
+  Fold 2: Acc=97.5%  Prec=96.0%  Sens=97.3%  F1=96.6%  AUROC=98.8%  (thresh=0.747)
+  Fold 3: Acc=96.5%  Prec=92.3%  Sens=98.6%  F1=95.4%  AUROC=99.4%  (thresh=0.294)
+  Fold 4: Acc=96.0%  Prec=91.1%  Sens=98.6%  F1=94.7%  AUROC=98.8%  (thresh=0.611)
+  Fold 5: Acc=97.0%  Prec=93.5%  Sens=98.6%  F1=96.0%  AUROC=99.4%  (thresh=0.666)
+
+  CV Mean: Acc=96.4%  Prec=92.6%  Sens=98.1%  F1=95.3%  AUROC=99.0%
+  CV Std:  Acc=1.0%  Prec=2.3%  Sens=0.7%  F1=1.2%  AUROC=0.3%
+
+================================================================================
+PER-PATIENT TEST PREDICTIONS
+================================================================================
+
+  Correctly classified: 190/199 (95.5%)
+
+  Sepsis patients: 74
+  Correctly caught: 68/74
+  Missed (FN): 6
+
+  Non-sepsis patients: 125
+  Correctly classified: 122/125
+  False alarms (FP): 3
+
+================================================================================
+STEP 7 : FEATURE IMPORTANCE  (Top 20 - XGBoost, for clinical interpretation)
+================================================================================
+
+  Rank  Feature                         Score  Contrib%   Cumul%  Clinical Meaning
+  ---------------------------------------------------------------------------------------------------------
+  1     sofa_range                     0.4098     41.0%    41.0%  SOFA score range ù measures trajectory instability
+  2     sofa_total_max                 0.1191     11.9%    52.9%  Peak SOFA ù worst total organ dysfunction recorded
+  3     sofa_total_delta_max           0.0309      3.1%    56.0%  Largest SOFA rise in one interval ù acute deterioration
+  4     map_critical_sum               0.0144      1.4%    57.4%  Hours with MAP < 60 mmHg ù critical hypotension burden
+  5     lactate_max                    0.0144      1.4%    58.9%  Peak lactate ù tissue hypoperfusion / shock marker
+  6     sofa_x_hr_mean                 0.0119      1.2%    60.1%  SOFA x heart rate ù combined cardiovascular stress
+  7     sofa_map_mean                  0.0117      1.2%    61.2%  SOFA cardiovascular sub-score mean
+  8     map_hr_ratio_mean              0.0109      1.1%    62.3%  MAP-to-HR ratio ù perfusion adequacy index
+  9     sofa_total_delta_mean          0.0108      1.1%    63.4%  Mean hourly SOFA change ù rate of deterioration
+  10    sofa_x_map_max                 0.0107      1.1%    64.5%  Peak SOFA x MAP ù severe hypotension with organ failure
+  11    resp_rate_min                  0.0101      1.0%    65.5%  Minimum respiratory rate ù hypoventilation risk
+  12    map_delta_min                  0.0094      0.9%    66.4%  Largest blood pressure drop ù acute haemodynamic event
+  13    map_min                        0.0089      0.9%    67.3%  Lowest MAP ù single worst hypotensive reading
+  14    map_delta_mean                 0.0089      0.9%    68.2%  Mean blood pressure variability across stay
+  15    spo2_critical_sum              0.0086      0.9%    69.1%  Hours with SpO2 < 90% ù hypoxaemia burden
+  16    sofa_total_mean                0.0084      0.8%    69.9%  Average SOFA ù sustained organ dysfunction level
+  17    map_max                        0.0082      0.8%    70.7%  Highest MAP ù hypertensive episodes
+  18    bilirubin_max                  0.0074      0.7%    71.5%  Peak bilirubin ù hepatic dysfunction severity
+  19    resp_rate_std                  0.0073      0.7%    72.2%  Respiratory rate variability ù breathing irregularity
+  20    map_hr_ratio_max               0.0073      0.7%    72.9%  Peak MAP-to-HR ratio ù acute perfusion stress
+
+  SOFA-related features in top 10 : 7/10
+  Top 10 features explain         : 64.5% of total model contribution
+  Top 20 features explain         : 72.9% of total model contribution
+
+================================================================================
+SAVING MODELS
+================================================================================
+
+  All artifacts saved to C:\Users\rutu2\Windows\Desktop\ipd_sepsis\data\model
+  Models: scaler_v3.pkl, logreg_v3.pkl, rf_v3.pkl, xgb_v3.pkl, gb_v3.pkl
+  Config: ensemble_weights_v3.pkl, ensemble_threshold_v3.pkl, feature_cols_v3.pkl
+  Results: performance_v3.csv, cv_results_v3.csv, test_predictions_v3.csv
+
+================================================================================
+FINAL MODEL COMPARISON SUMMARY
+================================================================================
+  Model                       Accuracy  Precision  Sensitivity  F1-Score    AUROC
+  -----------------------------------------------------------------------------
+  Logistic Regression            93.5%      93.0%        89.2%     91.0%   0.9904
+  Random Forest                  95.5%      89.2%       100.0%     94.3%   0.9882
+  XGBoost                        96.5%      91.4%       100.0%     95.5%   0.9930
+  Gradient Boosting              97.0%      92.5%       100.0%     96.1%   0.9904
+  -----------------------------------------------------------------------------
+  Ensemble v3 (LR+RF+XGB+GB)     95.5%      95.8%        91.9%     93.8%   0.9939  [BEST]
+  -----------------------------------------------------------------------------
+
+  Ensemble weights  : LR=0.2  RF=0.2  XGB=0.4  GB=0.2
+  Decision threshold: 0.7697  (optimised on held-out validation set)
+  Test confusion    : TP=68  TN=122  FP=3  FN=6
+  False Negatives   : 6 missed sepsis cases out of 74
+  False Positives   : 3 false alarms out of 125 non-sepsis patients
+  AUPRC             : 0.9891
+  CV AUROC (5-fold) : 0.9899 +/- 0.0035
+
+================================================================================
+TRAINING COMPLETE - Ensemble v3
+Dataset : 992 patients  |  Train : 793  |  Test : 199
+================================================================================
