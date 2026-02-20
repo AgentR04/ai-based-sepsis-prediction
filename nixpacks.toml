@@ -1,8 +1,9 @@
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip"]
+nixPkgs = ["python311"]
+cmds = ["python3 -m venv /opt/venv"]
 
 [phases.install]
-cmds = ["python3 -m pip install -r requirements-deploy.txt"]
+cmds = ["/opt/venv/bin/pip install -r requirements-deploy.txt"]
 
 [start]
 cmd = "streamlit run dashboard.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true"
