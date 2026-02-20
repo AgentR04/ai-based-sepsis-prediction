@@ -11,8 +11,11 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from pathlib import Path
 import joblib
-import torch
-import torch.nn.functional as F
+try:
+    import torch
+    import torch.nn.functional as F
+except ImportError:
+    torch = None
 import warnings
 warnings.filterwarnings("ignore")
 
