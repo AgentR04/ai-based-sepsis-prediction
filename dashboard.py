@@ -36,7 +36,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 # Load data (cached)
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_all():
     perf_ens   = pd.read_csv(MODEL_DIR / "performance_v3.csv")
     perf_gnn   = pd.read_csv(MODEL_DIR / "performance_gnn_v3.csv")
@@ -75,12 +75,13 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
-tab_overview, tab_sofa, tab_ensemble, tab_gnn, tab_testing = st.tabs([
+tab_overview, tab_sofa, tab_ensemble, tab_gnn, tab_testing, tab_shap = st.tabs([
     "Overview",
     "SOFA Analysis",
     "Ensemble Model",
     "GNN Model",
     "Full Test Report",
+    "SHAP Explainability",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -549,7 +550,7 @@ with tab_gnn:
         "**Red** = sepsis, **Blue** = non-sepsis. Node size reflects GNN confidence."
     )
 
-    @st.cache_data
+    @st.cache_data(ttl=3600)
     def build_sample_graph():
         from sklearn.preprocessing import StandardScaler
         from sklearn.model_selection import train_test_split
@@ -822,3 +823,400 @@ with tab_testing:
     display_cols = ["icustay_id", "True Label", "Ensemble Prob", "Ensemble Pred", "Ens Correct",
                     "GNN Prob", "GNN Pred", "GNN Correct"]
     st.dataframe(merged[display_cols], use_container_width=True, height=400)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 6 — SHAP EXPLAINABILITY
+# ═════════════════════════════════════════════════════════════════════════════
+with tab_shap:
+    st.title("SHAP Explainability — Why Did the Model Predict Sepsis?")
+    st.markdown(
+        """
+        **SHAP (SHapley Additive exPlanations)** assigns each clinical feature a contribution
+        score for every individual patient prediction.  
+        - **Red bars** push the predicted risk *toward sepsis*  
+        - **Blue bars** push the predicted risk *away from sepsis*  
+        This removes the black-box and gives clinicians a transparent, patient-specific reason
+        for each alert.
+        """
+    )
+    st.markdown("---")
+
+    # ── Clinical label dictionary ─────────────────────────────────────────
+    CLINICAL_LABELS = {
+        "sofa_range":                 "SOFA range — trajectory instability",
+        "sofa_total_max":             "Peak SOFA — worst organ dysfunction",
+        "sofa_total_delta_max":       "Largest SOFA rise — acute deterioration",
+        "map_critical_sum":           "Hours MAP < 60 mmHg — hypotension burden",
+        "lactate_max":                "Peak lactate — tissue hypoperfusion",
+        "sofa_x_hr_mean":             "SOFA × Heart Rate — cardiovascular stress",
+        "sofa_map_mean":              "SOFA cardiovascular sub-score (mean)",
+        "map_hr_ratio_mean":          "MAP-to-HR ratio — perfusion adequacy",
+        "sofa_total_delta_mean":      "Mean hourly SOFA change — deterioration rate",
+        "sofa_x_map_max":             "Peak SOFA × MAP — hypotension + organ failure",
+        "resp_rate_min":              "Min respiratory rate — hypoventilation risk",
+        "map_delta_min":              "Largest BP drop — acute haemodynamic event",
+        "map_min":                    "Lowest MAP — worst hypotensive reading",
+        "map_delta_mean":             "Mean BP variability across stay",
+        "spo2_critical_sum":          "Hours SpO₂ < 90 % — hypoxaemia burden",
+        "sofa_total_mean":            "Average SOFA — sustained organ dysfunction",
+        "map_max":                    "Highest MAP — hypertensive episodes",
+        "bilirubin_max":              "Peak bilirubin — hepatic dysfunction",
+        "resp_rate_std":              "Resp-rate variability — breathing irregularity",
+        "map_hr_ratio_max":           "Peak MAP-to-HR ratio — perfusion stress",
+        "creatinine_mean":            "Mean creatinine — renal impairment",
+        "risk_composite_max":         "Composite risk score peak — multi-system alarm",
+        "temp_range":                 "Temperature range — thermoregulatory instability",
+        "sofa_x_map_mean":            "Mean SOFA × MAP — sustained cardiovascular stress",
+        "sofa_x_hr_max":              "Peak SOFA × HR — cardiovascular decompensation",
+        "heart_rate_max":             "Peak heart rate — tachycardia severity",
+        "heart_rate_mean":            "Mean heart rate — sustained tachycardia",
+        "heart_rate_std":             "Heart rate variability",
+        "lactate_mean":               "Mean lactate — persistent hypoperfusion",
+        "sofa_total_min":             "Minimum SOFA score in stay",
+        "sofa_total_std":             "SOFA score variability",
+        "map_mean":                   "Mean arterial pressure (average)",
+        "map_std":                    "MAP variability across stay",
+        "hr_critical_sum":            "Hours HR > 110 — tachycardia burden",
+        "hr_critical_mean":           "Fraction of stay in tachycardia",
+        "creatinine_max":             "Peak creatinine — acute kidney injury",
+        "sofa_creatinine_max":        "Peak SOFA renal sub-score",
+        "sofa_creatinine_mean":       "Mean SOFA renal sub-score",
+        "sirs_score_max":             "Peak SIRS score — systemic inflammation",
+        "sirs_score_mean":            "Mean SIRS score",
+        "sirs_score_sum":             "Cumulative SIRS — prolonged inflammation",
+        "vital_instability":          "Vital-sign instability composite",
+        "lactate_high_sum":           "Hours lactate > 2 — sustained hypoperfusion",
+        "map_critical_mean":          "Fraction of stay with MAP < 60",
+        "map_critical_ratio":         "Ratio of critical MAP hours to total stay",
+        "critical_hours_ratio":       "Fraction of stay in critical HR",
+        "short_stay":                 "Short ICU stay (≤ 6 h) indicator",
+        "sofa_peak_hour_frac":        "Time-to-peak SOFA (fraction of stay)",
+        "hr_range":                   "Heart-rate range (max − min)",
+        "map_range":                  "MAP range (max − min)",
+        "temp_range":                 "Temperature range (max − min)",
+        "sofa_map_max":               "Peak SOFA cardiovascular sub-score",
+        "sofa_platelets_max":         "Peak SOFA platelet sub-score",
+        "sofa_platelets_mean":        "Mean SOFA platelet sub-score",
+        "sofa_bilirubin_max":         "Peak SOFA hepatic sub-score",
+        "sofa_bilirubin_mean":        "Mean SOFA hepatic sub-score",
+        "platelets_min":              "Minimum platelet count — bleeding risk",
+        "platelets_mean":             "Mean platelet count",
+        "sofa_x_lactate_max":         "Peak SOFA × Lactate — metabolic failure",
+        "sofa_x_lactate_mean":        "Mean SOFA × Lactate",
+        "sofa_x_creatinine_max":      "Peak SOFA × Creatinine — renal-organ failure",
+        "sofa_x_creatinine_mean":     "Mean SOFA × Creatinine",
+        "age_max":                    "Patient age — age-related risk",
+        "gender_max":                 "Patient gender",
+        "hour_max":                   "Length of ICU stay (hours)",
+        "hour_count":                 "Number of recorded hourly observations",
+        "spo2_mean":                  "Mean SpO₂ — oxygenation",
+        "spo2_min":                   "Minimum SpO₂ — worst oxygenation",
+        "spo2_std":                   "SpO₂ variability",
+        "temperature_mean":           "Mean temperature",
+        "temperature_max":            "Peak temperature — fever severity",
+        "temperature_min":            "Minimum temperature — hypothermia risk",
+        "temperature_std":            "Temperature variability",
+        "resp_rate_mean":             "Mean respiratory rate — tachypnoea",
+        "resp_rate_max":              "Peak respiratory rate",
+        "rr_critical_sum":            "Hours RR > 24 — respiratory distress burden",
+        "rr_critical_mean":           "Fraction of stay with RR > 24",
+        "spo2_critical_mean":         "Fraction of stay with SpO₂ < 90 %",
+        "lactate_min":                "Minimum lactate",
+        "bilirubin_mean":             "Mean bilirubin",
+        "creatinine_min":             "Minimum creatinine",
+        "lactate_high_mean":          "Fraction of stay with elevated lactate",
+        "creatinine_high_sum":        "Hours creatinine > 1.5 — renal dysfunction burden",
+        "creatinine_high_mean":       "Fraction of stay with elevated creatinine",
+        "map_hr_ratio_min":           "Minimum MAP-to-HR ratio — worst perfusion",
+        "lactate_platelets_ratio_mean": "Lactate/Platelet ratio mean — multi-organ stress",
+        "lactate_platelets_ratio_max":  "Peak Lactate/Platelet ratio",
+        "spo2_temp_ratio_mean":       "SpO₂/Temperature ratio mean",
+        "spo2_temp_ratio_min":        "Minimum SpO₂/Temperature ratio",
+        "heart_rate_delta_mean":      "Mean HR change per hour — trend",
+        "heart_rate_delta_max":       "Largest HR rise — acute acceleration",
+        "heart_rate_delta_min":       "Largest HR drop — acute slowing",
+        "heart_rate_delta_std":       "HR trend variability",
+        "map_delta_max":              "Largest BP rise",
+        "map_delta_std":              "BP trend variability",
+        "sofa_total_delta_std":       "SOFA trend variability",
+        "lactate_delta_mean":         "Mean lactate change per hour",
+        "lactate_delta_max":          "Largest lactate rise — acute hypoperfusion",
+        "lactate_delta_std":          "Lactate trend variability",
+        "risk_composite_mean":        "Mean composite risk score",
+    }
+
+    def feat_label(name):
+        return CLINICAL_LABELS.get(name, name.replace("_", " "))
+
+    # ── Build features + compute SHAP (cached) ────────────────────────────
+    @st.cache_data(ttl=3600, show_spinner="Computing SHAP values…")
+    def compute_shap():
+        try:
+            import shap as _shap
+        except ImportError:
+            return None, None, None, None, "shap not installed — run: pip install shap"
+
+        # Rebuild feature matrix (same pipeline as train_models_maximize_v3.py)
+        sofa_raw = pd.read_csv(LABEL_DIR / "sofa_hourly.csv")
+        onset    = pd.read_csv(LABEL_DIR / "sepsis_onset.csv")
+        _sids    = set(onset["icustay_id"].unique())
+        sofa_raw["label"] = sofa_raw["icustay_id"].isin(_sids).astype(int)
+
+        sofa_raw["map_hr_ratio"]            = sofa_raw["map"] / (sofa_raw["heart_rate"] + 1)
+        sofa_raw["lactate_platelets_ratio"] = sofa_raw["lactate"] / (sofa_raw["platelets"] + 1)
+        sofa_raw["spo2_temp_ratio"]         = sofa_raw["spo2"] / (sofa_raw["temperature"] + 0.1)
+        sofa_raw["sofa_x_hr"]              = sofa_raw["sofa_total"] * sofa_raw["heart_rate"]
+        sofa_raw["sofa_x_lactate"]         = sofa_raw["sofa_total"] * sofa_raw["lactate"]
+        sofa_raw["sofa_x_map"]             = sofa_raw["sofa_total"] * sofa_raw["map"]
+        sofa_raw["sofa_x_creatinine"]      = sofa_raw["sofa_creatinine"] * sofa_raw["creatinine"]
+        sofa_raw["hr_critical"]            = (sofa_raw["heart_rate"] > 110).astype(int)
+        sofa_raw["map_critical"]           = (sofa_raw["map"] < 60).astype(int)
+        sofa_raw["rr_critical"]            = (sofa_raw["resp_rate"] > 24).astype(int)
+        sofa_raw["spo2_critical"]          = (sofa_raw["spo2"] < 90).astype(int)
+        sofa_raw["lactate_high"]           = (sofa_raw["lactate"] > 2).astype(int)
+        sofa_raw["creatinine_high"]        = (sofa_raw["creatinine"] > 1.5).astype(int)
+        sofa_raw["sirs_score"] = (
+            (sofa_raw["heart_rate"] > 90).astype(int) +
+            (sofa_raw["resp_rate"] > 20).astype(int) +
+            ((sofa_raw["temperature"] > 38) | (sofa_raw["temperature"] < 36)).astype(int)
+        )
+        sofa_raw["risk_composite"] = (
+            sofa_raw["sofa_total"] * 2 +
+            (sofa_raw["heart_rate"] > 100).astype(int) +
+            (sofa_raw["map"] < 65).astype(int) * 2 +
+            (sofa_raw["lactate"] > 2).astype(int) * 3
+        )
+        sofa_raw = sofa_raw.sort_values(["icustay_id", "hour"])
+        for _c in ["heart_rate", "map", "sofa_total", "lactate"]:
+            sofa_raw[f"{_c}_delta"] = sofa_raw.groupby("icustay_id")[_c].diff()
+
+        def _time_to_max(grp):
+            if grp["sofa_total"].isna().all():
+                return pd.Series({"sofa_peak_hour_frac": 0.5})
+            mh = grp.loc[grp["sofa_total"].idxmax(), "hour"]
+            th = grp["hour"].max()
+            return pd.Series({"sofa_peak_hour_frac": (mh / th) if th > 0 else 0.0})
+
+        sofa_peak2 = sofa_raw.groupby("icustay_id").apply(_time_to_max).reset_index()
+
+        _agg_funcs = {
+            "heart_rate": ["mean","max","min","std"], "map": ["mean","max","min","std"],
+            "resp_rate": ["mean","max","min","std"],  "spo2": ["mean","min","std"],
+            "temperature": ["mean","max","min","std"],
+            "bilirubin": ["max","mean"], "creatinine": ["max","mean","min"],
+            "lactate": ["max","mean","min"], "platelets": ["min","mean"],
+            "age": "max", "gender": "max",
+            "sofa_total": ["max","mean","min","std"],
+            "sofa_map": ["max","mean"], "sofa_creatinine": ["max","mean"],
+            "sofa_platelets": ["max","mean"], "sofa_bilirubin": ["max","mean"],
+            "map_hr_ratio": ["mean","max","min"], "lactate_platelets_ratio": ["mean","max"],
+            "spo2_temp_ratio": ["mean","min"],
+            "sofa_x_hr": ["max","mean"], "sofa_x_lactate": ["max","mean"],
+            "sofa_x_map": ["max","mean"], "sofa_x_creatinine": ["max","mean"],
+            "hr_critical": ["sum","mean"], "map_critical": ["sum","mean"],
+            "rr_critical": ["sum","mean"],  "spo2_critical": ["sum","mean"],
+            "lactate_high": ["sum","mean"], "creatinine_high": ["sum","mean"],
+            "sirs_score": ["max","mean","sum"], "risk_composite": ["max","mean"],
+            "hour": ["max","count"],
+            "heart_rate_delta": ["mean","max","min","std"],
+            "map_delta": ["mean","max","min","std"],
+            "sofa_total_delta": ["mean","max","std"],
+            "lactate_delta": ["mean","max","std"],
+            "label": "max",
+        }
+        _agg = sofa_raw.groupby("icustay_id").agg(_agg_funcs)
+        _agg.columns = ["_".join(c).strip() for c in _agg.columns.values]
+        _agg = _agg.reset_index()
+        _agg = _agg.merge(sofa_peak2, on="icustay_id", how="left")
+        _agg["hr_range"]   = _agg["heart_rate_max"] - _agg["heart_rate_min"]
+        _agg["map_range"]  = _agg["map_max"]         - _agg["map_min"]
+        _agg["temp_range"] = _agg["temperature_max"] - _agg["temperature_min"]
+        _agg["sofa_range"] = _agg["sofa_total_max"]  - _agg["sofa_total_min"]
+        _agg["vital_instability"] = (
+            _agg.get("heart_rate_std", 0) + _agg.get("map_std", 0) + _agg.get("resp_rate_std", 0)
+        )
+        _agg["short_stay"]           = (_agg["hour_max"] <= 6).astype(int)
+        _agg["critical_hours_ratio"] = _agg["hr_critical_sum"] / (_agg["hour_count"] + 1)
+        _agg["map_critical_ratio"]   = _agg["map_critical_sum"] / (_agg["hour_count"] + 1)
+
+        feat_cols  = joblib.load(MODEL_DIR / "feature_cols_v3.pkl")
+        train_med  = joblib.load(MODEL_DIR / "train_median_v3.pkl")
+        test_preds = pd.read_csv(MODEL_DIR / "test_predictions_v3.csv")
+        test_ids   = set(test_preds["icustay_id"].values)
+
+        _agg = _agg[_agg["icustay_id"].isin(test_ids)].reset_index(drop=True)
+        X_raw = _agg[feat_cols].copy().fillna(train_med).replace([np.inf, -np.inf], 0)
+
+        xgb_model = joblib.load(MODEL_DIR / "xgb_v3.pkl")
+        explainer  = _shap.TreeExplainer(xgb_model)
+        sv         = explainer.shap_values(X_raw)
+
+        meta = _agg[["icustay_id", "label_max"]].merge(
+            test_preds[["icustay_id", "predicted_prob", "predicted_label"]],
+            on="icustay_id", how="left"
+        ).reset_index(drop=True)
+
+        return sv, X_raw.values, feat_cols, meta, None
+
+    sv, X_arr, feat_cols_shap, meta_df, shap_err = compute_shap()
+
+    if shap_err:
+        st.error(shap_err)
+        st.stop()
+
+    # ── Global SHAP importance bar chart ─────────────────────────────────
+    st.subheader("Global Feature Importance — Mean |SHAP Value| (XGBoost)")
+    st.markdown(
+        "Each bar shows the average absolute SHAP contribution across all test patients. "
+        "Longer bar = more influential feature in determining sepsis risk."
+    )
+
+    mean_abs_shap = np.abs(sv).mean(axis=0)
+    importance_df = pd.DataFrame({
+        "feature":      feat_cols_shap,
+        "mean_abs_shap": mean_abs_shap,
+    }).sort_values("mean_abs_shap", ascending=False).head(20)
+    importance_df["label"] = importance_df["feature"].apply(feat_label)
+    importance_df["pct"]   = importance_df["mean_abs_shap"] / importance_df["mean_abs_shap"].sum() * 100
+
+    fig_global = px.bar(
+        importance_df.sort_values("mean_abs_shap"),
+        x="mean_abs_shap", y="label",
+        orientation="h",
+        color="mean_abs_shap",
+        color_continuous_scale="Reds",
+        labels={"mean_abs_shap": "Mean |SHAP|", "label": "Clinical Feature"},
+        text=importance_df.sort_values("mean_abs_shap")["pct"].apply(lambda v: f"{v:.1f}%"),
+    )
+    fig_global.update_traces(textposition="outside")
+    fig_global.update_layout(
+        height=560, coloraxis_showscale=False, margin=dict(l=10, r=80),
+        xaxis_title="Mean |SHAP value| (log-odds contribution)",
+    )
+    st.plotly_chart(fig_global, use_container_width=True, key="shap_global")
+
+    st.markdown("---")
+
+    # ── Per-patient explanation ───────────────────────────────────────────
+    st.subheader("Patient-Level Explanation — Waterfall Chart")
+    st.markdown(
+        "Select an ICU patient below to see exactly which parameters drove their "
+        "sepsis prediction. Features are sorted by absolute impact."
+    )
+
+    # Build display labels for patient selector
+    patient_options = []
+    for _, row in meta_df.iterrows():
+        true_lbl = "Sepsis" if row["label_max"] == 1 else "No Sepsis"
+        pred_lbl = "Sepsis" if row["predicted_label"] == 1 else "No Sepsis"
+        correct  = "✓" if row["label_max"] == row["predicted_label"] else "✗"
+        patient_options.append(
+            f"ID {int(row['icustay_id'])}  |  True: {true_lbl}  |  Pred: {pred_lbl}  "
+            f"(p={row['predicted_prob']:.3f})  {correct}"
+        )
+
+    selected_label = st.selectbox(
+        "Select patient",
+        options=patient_options,
+        index=0,
+        help="Each entry shows the patient ID, true label, model prediction and probability.",
+    )
+    pat_idx = patient_options.index(selected_label)
+    pat_row = meta_df.iloc[pat_idx]
+
+    # Risk banner
+    true_sep  = int(pat_row["label_max"]) == 1
+    pred_sep  = int(pat_row["predicted_label"]) == 1
+    pred_prob = float(pat_row["predicted_prob"])
+    banner_color = "#F44336" if pred_sep else "#2196F3"
+    banner_text  = (
+        f"Predicted: **{'SEPSIS' if pred_sep else 'NO SEPSIS'}**  "
+        f"| Confidence: **{pred_prob*100:.1f}%**  "
+        f"| True label: **{'Sepsis' if true_sep else 'No Sepsis'}**  "
+        f"| {'Correct ✓' if pred_sep == true_sep else 'Incorrect ✗'}"
+    )
+    st.markdown(
+        f"<div style='background:{banner_color};padding:10px 16px;border-radius:6px;"
+        f"color:white;font-size:15px'>{banner_text}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Waterfall data for this patient
+    shap_row = sv[pat_idx]
+    feat_row = X_arr[pat_idx]
+
+    wf_df = pd.DataFrame({
+        "feature":    feat_cols_shap,
+        "shap_value": shap_row,
+        "feat_value": feat_row,
+    })
+    wf_df["label"]    = wf_df["feature"].apply(feat_label)
+    wf_df["abs_shap"] = wf_df["shap_value"].abs()
+    wf_df = wf_df.nlargest(15, "abs_shap").sort_values("shap_value")
+
+    wf_df["color"]    = wf_df["shap_value"].apply(
+        lambda v: "#F44336" if v > 0 else "#2196F3"
+    )
+    wf_df["bar_label"] = wf_df.apply(
+        lambda r: f"SHAP={r['shap_value']:+.4f}  (value={r['feat_value']:.3g})", axis=1
+    )
+
+    fig_wf = go.Figure(go.Bar(
+        x=wf_df["shap_value"],
+        y=wf_df["label"],
+        orientation="h",
+        marker_color=wf_df["color"].tolist(),
+        text=wf_df["bar_label"].tolist(),
+        textposition="outside",
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "SHAP contribution: %{x:+.4f}<br>"
+            "<extra></extra>"
+        ),
+    ))
+    fig_wf.add_vline(x=0, line_color="white", line_width=1.5)
+    fig_wf.update_layout(
+        height=520,
+        xaxis_title="SHAP value (positive = toward Sepsis, negative = away from Sepsis)",
+        margin=dict(l=10, r=180, t=20, b=20),
+        plot_bgcolor="#0E1117",
+        xaxis=dict(zeroline=True, zerolinecolor="white", zerolinewidth=1),
+    )
+    st.plotly_chart(fig_wf, use_container_width=True, key="shap_waterfall")
+
+    # ── Clinical interpretation table ────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Feature Contribution Table (Top 15)")
+
+    interp_df = wf_df[["label", "feat_value", "shap_value"]].copy()
+    interp_df.columns = ["Clinical Feature", "Patient Value", "SHAP Contribution"]
+    interp_df["Direction"] = interp_df["SHAP Contribution"].apply(
+        lambda v: "↑ Increases sepsis risk" if v > 0 else "↓ Reduces sepsis risk"
+    )
+    interp_df = interp_df.sort_values("SHAP Contribution", key=abs, ascending=False)
+    interp_df["Patient Value"]      = interp_df["Patient Value"].round(4)
+    interp_df["SHAP Contribution"]  = interp_df["SHAP Contribution"].round(5)
+
+    def _color_shap(val):
+        if isinstance(val, float):
+            if val > 0:
+                intensity = min(int(abs(val) * 8000), 180)
+                return f"background-color: rgba(244,67,54,{intensity/255:.2f}); color: white"
+            elif val < 0:
+                intensity = min(int(abs(val) * 8000), 180)
+                return f"background-color: rgba(33,150,243,{intensity/255:.2f}); color: white"
+        return ""
+
+    st.dataframe(
+        interp_df.reset_index(drop=True).style.applymap(
+            _color_shap, subset=["SHAP Contribution"]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("---")
+
+    
